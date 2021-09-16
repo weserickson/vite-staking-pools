@@ -3,3 +3,11 @@ build
 npm-debug.log
 .env
 .DS_Store
+contracts/getter_code_scratch.solpp
+scripts/
+scripts/build.js
+scripts/constants.js
+scripts/deploy.js
+scripts/main.js
+scripts/shellscript.sh
+scripts/stakingpools.js

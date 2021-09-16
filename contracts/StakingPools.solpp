@@ -162,7 +162,7 @@ contract StakingPools {
     {
         require(startBlock < endBlock); // start time must be before end time
         require(block.number < startBlock); // start time cannot be in the past
-        emit PoolCreated(poolCount);
+        emit PoolCreated(poolCount); // emit PoolId of new pool.
         PoolInfo storage pool = pools[poolCount++];
         pool.stakingTokenId = stakingTokenId;
         pool.rewardTokenId = msg.tokenid; // reward tokenId determined by funds sent
