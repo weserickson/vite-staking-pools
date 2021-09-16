@@ -1,0 +1,17 @@
+{
+  "name": "staking-pools",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "mytestcommand",
+    "deploy": "node scripts/main",
+    "shellscript": "scripts/shellscript.sh"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@vite/vitejs": "^2.3.14",
+    "@vite/vitejs-ws": "^2.3.14"
+  }
+}

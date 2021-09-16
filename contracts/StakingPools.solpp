@@ -1,0 +1,228 @@
+pragma soliditypp ^0.4.3;
+import "./SafeMathBasic.solpp";
+//
+// StakingPools.solpp
+//
+// Staking pools distribute a chosen native Vite token as a reward to users staking another
+// chosen native Vite token. The total reward rate is fixed, and staking users earn rewards
+// proportional to the amount they stake.
+//
+// Based partly on https://github.com/ltonetwork/uniswap-farming/blob/master/contracts/Farm.sol
+//
+// We do some fancy math here to avoid for loops over all accounts. Basically, at any point in
+// time the pending amount of reward tokens a user is entitled to is:
+//
+//   pendingAmount = (user.stakingBalance * pool.rewardPerToken) - user.rewardDebt
+//
+// Here, rewardPerToken is the net rewards earned globally for having staked a token up to the current
+// time. A user staking for only part of this time (or a user who had already withdrawn rewards) would 
+// not be entitled to this whole amount, and so we must calculate a rewardDebt to prevent overpaying.
+// The moment a user changes their stake, the contract pays out all pending rewards and then
+// recalculates the rewardDebt such that the pendingAmount is zero at the deposit/withdrawal time.
+//
+// Therefore, whenever a user deposits or withdraws staking tokens to a pool, the following happens:
+//   1. The pool's `rewardPerToken` (and `lastRewardBlock`) gets updated.
+//   2. User receives the pending reward sent to his/her address.
+//   3. User's `stakingBalance` gets updated. (from deposit/withdraw)
+//   4. User's `rewardDebt` gets updated.
+//  
+// Notes:
+// - latestReward and rewardPerToken are a factor of 1e36 over the true value. When these values are
+//   used to caluculate rewardDebt and pendingAmount, we divide by 1e36. This is a poor-man's implementation
+//   of fixed point calculations to avoid rounding issues (1e36 is half the range of a uint's 2^256).
+//   Simple explanation: https://ethereum.stackexchange.com/a/79732
+//   May wish to consider robust approach like: https://github.com/abdk-consulting/abdk-libraries-solidity
+// - APR.
+//
+// Warnings:
+// - If there is a period of time where there is no StakingBalance, some reward tokens will be
+//   permanently locked within the contract. Make sure to stake a small amount of the chosen
+//   staking token before the startBlock to avoid such losses.
+// - If the stakingTokenID is chosen incorrectly, all reward tokens will be locked within the
+//   contract (if you can't stake the correct token, you cant earn rewards). Deploy carefully.
+// 
+contract StakingPools {
+
+    using SafeMathBasic for uint;
+
+    struct UserInfo {
+        uint stakingBalance;
+        uint rewardDebt;
+    }
+
+    struct PoolInfo {
+        mapping(address => UserInfo) userInfo;
+        tokenId stakingTokenId;
+        tokenId rewardTokenId;
+        uint totalStakingBalance;
+        uint totalRewardBalance;
+        uint startBlock;
+        uint endBlock;
+        uint latestRewardBlock;
+        uint rewardPerPeriod;
+        uint rewardPerToken;
+        uint paidOut;
+    }
+
+    event PoolCreated(uint pid);
+    event Deposit(address addr, uint pid, uint amount);
+    event Withdraw(address addr, uint pid, uint amount);
+
+    // globals
+    uint poolCount;
+    mapping(uint => PoolInfo) public pools;
+
+    constructor() public {
+    }
+
+    
+    function _updatePool(uint PoolId) private {
+        PoolInfo storage pool = pools[PoolId];        
+
+        uint latestBlock = block.number < pool.endBlock ? block.number : pool.endBlock;
+
+        // rewardPerToken is global, so we only want to update once per timestamp/block.
+        // latestRewardBlock initially set to startBlock, so no updates before that.
+        if( latestBlock <= pool.latestRewardBlock ) {
+            return;
+        }
+
+        // if staking balance is 0 over a period, the rewardPerToken should not increase.
+        if ( pool.totalStakingBalance == 0 ) {
+            pool.latestRewardBlock = latestBlock;
+            return;
+        }
+
+        // increase rewardPerToken by reward amount over period since previous reward block.
+        uint period = latestBlock.sub(pool.latestRewardBlock);
+        uint latestReward = pool.rewardPerPeriod.mul(period).mul(1e36).div(pool.totalStakingBalance);
+        pool.rewardPerToken = pool.rewardPerToken.add(latestReward);
+        
+        pool.latestRewardBlock = latestBlock;
+        // FIXME: Possible issue, check following:
+        //     Other pool code used block.number not latestBlock. Not sure why, need to
+        //     investigate to make sure this isn't an issue. latestBlock seems correct.
+        //     Other code:
+        //     pool.latestRewardBlock = block.number;
+        //     Seems wrong since, can move latest block beyond end block?
+        //     We want period latestBlock - latestRewardBlock = 0
+
+    }
+
+    onMessage deposit(uint PoolId) payable {
+        PoolInfo storage pool = pools[PoolId];
+        UserInfo storage user = pool.userInfo[msg.sender];
+        _updatePool(PoolId);
+        require(msg.tokenid == pool.stakingTokenId); // token sent does not match staking pool; also rejects 
+
+        // dispense rewards
+        if (user.stakingBalance > 0) {
+            uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
+            msg.sender.transfer(pool.rewardTokenId, pendingAmount);
+            pool.paidOut = pool.paidOut.add(pendingAmount);
+        }
+
+        // update balances & recompute rewardDebt
+        user.stakingBalance = user.stakingBalance.add(msg.amount);
+        pool.totalStakingBalance = pool.totalStakingBalance.add(msg.amount);
+        user.rewardDebt = user.stakingBalance.mul(pool.rewardPerToken).div(1e36);
+
+        emit Deposit(msg.sender, PoolId, msg.amount);
+    }
+
+    onMessage withdraw(uint PoolId, uint amount) {
+        PoolInfo storage pool = pools[PoolId];
+        UserInfo storage user = pool.userInfo[msg.sender];
+        _updatePool(PoolId);
+        require(user.stakingBalance > 0); // must have funds staked to withdraw
+        require(user.stakingBalance >= amount); // can't withdraw more than deposit
+        
+        // dispense rewards, no if statement due to require.
+        uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
+        msg.sender.transfer(pool.rewardTokenId, pendingAmount);
+        pool.paidOut = pool.paidOut.add(pendingAmount);
+
+        // update balances & recompute rewardDebt
+        user.stakingBalance = user.stakingBalance.sub(amount);
+        pool.totalStakingBalance = pool.totalStakingBalance.sub(amount);
+        user.rewardDebt = user.stakingBalance.mul(pool.rewardPerToken).div(1e36);
+        
+        // send withdrawn funds
+        msg.sender.transfer(pool.stakingTokenId, amount);
+        
+        emit Withdraw(msg.sender, PoolId, amount);        
+    }
+
+    onMessage createStakingPool(
+        uint startBlock,
+        uint endBlock,
+        tokenId stakingTokenId
+    )
+        payable
+    {
+        require(startBlock < endBlock); // start time must be before end time
+        require(block.number < startBlock); // start time cannot be in the past
+        emit PoolCreated(poolCount);
+        PoolInfo storage pool = pools[poolCount++];
+        pool.stakingTokenId = stakingTokenId;
+        pool.rewardTokenId = msg.tokenid; // reward tokenId determined by funds sent
+        pool.totalStakingBalance = 0;
+        pool.totalRewardBalance = msg.amount;
+        pool.startBlock = startBlock;
+        pool.endBlock = endBlock;
+        pool.latestRewardBlock = startBlock;
+        pool.rewardPerPeriod = msg.amount / (endBlock-startBlock);
+        pool.rewardPerToken = 0;
+        pool.paidOut = 0;
+    }
+
+    getter getPoolCount() returns (uint pool_count) {
+        return poolCount;
+    }
+
+    getter getUserInfo (uint PoolId, address addr)
+        returns (
+            uint stakingBalance,
+            uint rewardDebt
+        )
+    {
+        return (
+            pools[PoolId].userInfo[addr].stakingBalance,
+            pools[PoolId].userInfo[addr].rewardDebt
+        );
+    }
+
+    getter getPoolInfo(uint PoolId)
+        returns (
+            tokenId stakingTokenId,
+            tokenId rewardTokenId,
+            uint totalStakingBalance,
+            uint totalRewardBalance,
+            uint startBlock,
+            uint endBlock,
+            uint latestRewardBlock,
+            uint rewardPerPeriod,
+            uint rewardPerToken,
+            uint paidOut
+        )
+    {
+        PoolInfo storage pool = pools[PoolId];
+        return (
+            pool.stakingTokenId,
+            pool.rewardTokenId,
+            pool.totalStakingBalance,
+            pool.totalRewardBalance,
+            pool.startBlock,
+            pool.endBlock,
+            pool.latestRewardBlock,
+            pool.rewardPerPeriod,
+            pool.rewardPerToken,
+            pool.paidOut
+        );
+    }
+
+
+}
+
+
+
