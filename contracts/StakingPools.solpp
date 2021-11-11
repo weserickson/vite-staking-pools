@@ -113,7 +113,8 @@ contract StakingPools {
         PoolInfo storage pool = pools[PoolId];
         UserInfo storage user = pool.userInfo[msg.sender];
         _updatePool(PoolId);
-        require(msg.tokenid == pool.stakingTokenId); // token sent does not match staking pool; also rejects 
+        require(msg.tokenid == pool.stakingTokenId); // token sent does not match staking pool
+        require(block.number <= pool.endBlock); // prevent deposit if pool closed
 
         // dispense rewards
         if (user.stakingBalance > 0) {
