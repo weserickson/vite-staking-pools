@@ -172,7 +172,7 @@ contract StakingPools {
         pool.startBlock = startBlock;
         pool.endBlock = endBlock;
         pool.latestRewardBlock = startBlock;
-        pool.rewardPerPeriod = msg.amount / (endBlock-startBlock);
+        pool.rewardPerPeriod = msg.amount.div(endBlock.sub(startBlock));
         pool.rewardPerToken = 0;
         pool.paidOut = 0;
     }
