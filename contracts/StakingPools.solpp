@@ -33,7 +33,6 @@ import "./Owned.solpp";
 //   of fixed point calculations to avoid rounding issues (1e36 is half the range of a uint's 2^256).
 //   Simple explanation: https://ethereum.stackexchange.com/a/79732
 //   May wish to consider robust approach like: https://github.com/abdk-consulting/abdk-libraries-solidity
-// - APR.
 //
 // Warnings:
 // - If there is a period of time where there is no StakingBalance, some reward tokens will be
@@ -46,6 +45,9 @@ contract StakingPools is Owned {
 
     using SafeMathBasic for uint;
 
+    // uint constant adminDelay = 60*60*24*7; // for mainnet
+    uint constant adminDelay = 60; // for testing
+
     struct UserInfo {
         uint stakingBalance;
         uint rewardDebt;
@@ -57,6 +59,7 @@ contract StakingPools is Owned {
         tokenId rewardTokenId;
         uint totalStakingBalance;
         uint totalRewardBalance;
+        uint currentRewardBalance;
         uint startBlock;
         uint endBlock;
         uint latestRewardBlock;
@@ -75,7 +78,6 @@ contract StakingPools is Owned {
 
     constructor() Owned() public {
     }
-
     
     function _updatePool(uint PoolId) private {
         PoolInfo storage pool = pools[PoolId];        
@@ -121,6 +123,7 @@ contract StakingPools is Owned {
         if (user.stakingBalance > 0) {
             uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
             msg.sender.transfer(pool.rewardTokenId, pendingAmount);
+            pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
             pool.paidOut = pool.paidOut.add(pendingAmount);
         }
 
@@ -142,6 +145,7 @@ contract StakingPools is Owned {
         // dispense rewards, no if statement due to require.
         uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
         msg.sender.transfer(pool.rewardTokenId, pendingAmount);
+        pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
         pool.paidOut = pool.paidOut.add(pendingAmount);
 
         // update balances & recompute rewardDebt
@@ -179,6 +183,18 @@ contract StakingPools is Owned {
         pool.rewardPerPeriod = msg.amount.div(endBlock.sub(startBlock));
         pool.rewardPerToken = 0;
         pool.paidOut = 0;
+    }
+
+// A bit dangerous if malicious owner could intentiounally create dust? No, they can't.
+    onMessage withdrawDust(uint PoolId){
+        PoolInfo storage pool = pools[PoolId];
+        require(msg.sender == owner);
+        require(block.number > pool.endBlock + adminDelay);
+        require(pool.currentRewardBalance > 0);
+        require(PoolId < poolCount);
+        require(pool.paidOut < pool.totalRewardBalance);
+        msg.sender.transfer(pool.rewardTokenId, pool.currentRewardBalance);
+        pool.currentRewardBalance = 0;
     }
 
     getter getPoolCount() returns (uint pool_count) {
