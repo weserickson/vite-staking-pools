@@ -109,6 +109,10 @@ contract StakingPools is Owned {
         //     pool.latestRewardBlock = block.number;
         //     Seems wrong since, can move latest block beyond end block?
         //     We want period latestBlock - latestRewardBlock = 0
+        //
+        //     OK: I've figured this out: if latestRewardBlock is set to block.number
+        //     and this is greater than endBlock, then the next update called will return because
+        //     latestBlock is capped at pool.endBlock. So it doesn't matter one way or another.
 
     }
 
