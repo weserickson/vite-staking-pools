@@ -127,9 +127,12 @@ contract StakingPools is Owned {
         // dispense rewards
         if (user.stakingBalance > 0) {
             uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
+            if( pendingAmount > 0 ){
+                require( pendingAmount <= pool.currentRewardBalance ); // redundant with safemath .sub below
             msg.sender.transfer(pool.rewardTokenId, pendingAmount);
             pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
             pool.paidOut = pool.paidOut.add(pendingAmount);
+        }
         }
 
         // update balances & recompute rewardDebt
@@ -149,9 +152,12 @@ contract StakingPools is Owned {
         
         // dispense rewards, no if statement needed due to requires.
         uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
+        if( pendingAmount > 0 ){
+            require( pendingAmount <= pool.currentRewardBalance ); // redundant with safemath .sub below
         msg.sender.transfer(pool.rewardTokenId, pendingAmount);
         pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
         pool.paidOut = pool.paidOut.add(pendingAmount);
+        }
 
         // update balances & recompute rewardDebt
         user.stakingBalance = user.stakingBalance.sub(amount);
