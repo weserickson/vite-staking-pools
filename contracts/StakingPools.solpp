@@ -155,6 +155,7 @@ contract StakingPools is Owned {
         emit Withdraw(msg.sender, PoolId, amount);        
     }
 
+    /// @notice rewardPerPeriod has the potential to round down only, allowing for some dust.
     onMessage createStakingPool(
         uint startBlock,
         uint endBlock,
