@@ -129,10 +129,10 @@ contract StakingPools is Owned {
             uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
             if( pendingAmount > 0 ){
                 require( pendingAmount <= pool.currentRewardBalance ); // redundant with safemath .sub below
-            msg.sender.transfer(pool.rewardTokenId, pendingAmount);
-            pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
-            pool.paidOut = pool.paidOut.add(pendingAmount);
-        }
+                msg.sender.transfer(pool.rewardTokenId, pendingAmount);
+                pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
+                pool.paidOut = pool.paidOut.add(pendingAmount);
+            }
         }
 
         // update balances & recompute rewardDebt
@@ -154,9 +154,9 @@ contract StakingPools is Owned {
         uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
         if( pendingAmount > 0 ){
             require( pendingAmount <= pool.currentRewardBalance ); // redundant with safemath .sub below
-        msg.sender.transfer(pool.rewardTokenId, pendingAmount);
-        pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
-        pool.paidOut = pool.paidOut.add(pendingAmount);
+            msg.sender.transfer(pool.rewardTokenId, pendingAmount);
+            pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
+            pool.paidOut = pool.paidOut.add(pendingAmount);
         }
 
         // update balances & recompute rewardDebt
@@ -181,6 +181,7 @@ contract StakingPools is Owned {
         require(msg.sender == owner);
         require(startBlock < endBlock); // start time must be before end time
         require(block.number < startBlock); // start time cannot be in the past
+        require(msg.amount < 1e35); // prevent potential issues with large supply tokens
         emit PoolCreated(poolCount); // emit PoolId of new pool.
         PoolInfo storage pool = pools[poolCount++];
         pool.stakingTokenId = stakingTokenId;
@@ -198,7 +199,7 @@ contract StakingPools is Owned {
 
     // Add additional funds to the pool, increase the end block
     onMessage fundStakingPool(uint PoolId) payable {
-        //require(msg.sender == owner); // maybe, maybe not.
+        require(msg.sender == owner);
         PoolInfo storage pool = pools[PoolId];
         require(block.number < pool.endBlock); // can't fund an ended pool
         require(msg.tokenid == pool.rewardTokenId);
@@ -207,6 +208,7 @@ contract StakingPools is Owned {
         uint endBlockIncrease = msg.amount.div(pool.rewardPerPeriod);
         require(endBlockIncrease > 0);
         pool.totalRewardBalance = pool.totalRewardBalance.add(msg.amount);
+        require(pool.totalRewardBalance < 1e35); // prevent potential issues with large supply tokens
         pool.currentRewardBalance = pool.currentRewardBalance.add(msg.amount);
         pool.endBlock += endBlockIncrease;
     }
