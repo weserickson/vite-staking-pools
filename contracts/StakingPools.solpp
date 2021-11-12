@@ -1,59 +1,90 @@
 pragma soliditypp ^0.4.3;
 import "./SafeMathBasic.solpp";
 import "./Owned.solpp";
-//
-// StakingPools.solpp
-//
-// Staking pools distribute a chosen native Vite token as a reward to users staking another
-// chosen native Vite token. The total reward rate is fixed, and staking users earn rewards
-// proportional to the amount they stake.
-//
-// Based partly on https://github.com/ltonetwork/uniswap-farming/blob/master/contracts/Farm.sol
-//
-// We do some fancy math here to avoid for loops over all accounts. Basically, at any point in
-// time the pending amount of reward tokens a user is entitled to is:
-//
-//   pendingAmount = (user.stakingBalance * pool.rewardPerToken) - user.rewardDebt
-//
-// Here, rewardPerToken is the net rewards earned globally for having staked a token up to the current
-// time. A user staking for only part of this time (or a user who had already withdrawn rewards) would 
-// not be entitled to this whole amount, and so we must calculate a rewardDebt to prevent overpaying.
-// The moment a user changes their stake, the contract pays out all pending rewards and then
-// recalculates the rewardDebt such that the pendingAmount is zero at the deposit/withdrawal time.
-//
-// Therefore, whenever a user deposits or withdraws staking tokens to a pool, the following happens:
-//   1. The pool's `rewardPerToken` (and `lastRewardBlock`) gets updated.
-//   2. User receives the pending reward sent to his/her address.
-//   3. User's `stakingBalance` gets updated. (from deposit/withdraw)
-//   4. User's `rewardDebt` gets updated.
-//  
-// Notes:
-// - latestReward and rewardPerToken are a factor of 1e36 over the true value. When these values are
-//   used to caluculate rewardDebt and pendingAmount, we divide by 1e36. This is a poor-man's implementation
-//   of fixed point calculations to avoid rounding issues (1e36 is half the range of a uint's 2^256).
-//   Simple explanation: https://ethereum.stackexchange.com/a/79732
-//   May wish to consider robust approach like: https://github.com/abdk-consulting/abdk-libraries-solidity
-//
-// Warning: Treward tokens
-// - If there is a period of time where there is no StakingBalance, some reward tokens will be
-//   locked within the contract until adminDelay seconds after the pool closes. Make sure to
-//   stake a small amount of the chosen staking token before the startBlock to avoid this issue.
-// - If the stakingTokenID is chosen incorrectly, all reward tokens will be locked within the
-//   contract until adminDelay seconds after the pool closes (if you can't stake the correct
-//   token because no such token exists, you cant earn rewards). Deploy carefully.
-// 
+
+/// @title StakingPools staking contract for VivaFi.org
+/// @author Wesley W. Erickson
+/// @notice Users deposit Vite native tokens into contract and earn other Vite native tokens over time as a reward, proportional to their deposited stake.
+/// @dev --------------------------------------------------------------------------------------------------------------------
+/// @dev Staking pools distribute a chosen native Vite token as a reward to users staking another
+/// @dev chosen native Vite token. The total reward rate is fixed, and staking users earn rewards
+/// @dev proportional to the amount they stake.
+/// @dev 
+/// @dev This contract is based partly on https://github.com/ltonetwork/uniswap-farming/blob/master/contracts/Farm.sol
+/// @dev 
+/// @dev We do some fancy math here to avoid for loops over all accounts. Basically, at any point in
+/// @dev time the pending amount of reward tokens a user is entitled to is:
+/// @dev 
+/// @dev   pendingAmount = (user.stakingBalance * pool.rewardPerToken) - user.rewardDebt
+/// @dev 
+/// @dev Here, rewardPerToken is the cumulative rewards earned globally for having staked a token up to the current
+/// @dev time. A user staking for only part of this time (or a user who had already withdrawn rewards) would 
+/// @dev not be entitled to this whole amount, and so we must calculate a rewardDebt to prevent overpaying.
+/// @dev The moment a user changes their stake, the contract pays out all pending rewards and then
+/// @dev recalculates the rewardDebt such that the pendingAmount is zero immediately after the deposit/withdrawal.
+/// @dev 
+/// @dev Therefore, whenever a user deposits or withdraws staking tokens to a pool, the following happens:
+/// @dev   1. The pool's `rewardPerToken` (and `lastRewardBlock`) gets updated.
+/// @dev   2. User receives the pending reward sent to his/her address.
+/// @dev   3. User's `stakingBalance` gets updated. (from deposit/withdraw)
+/// @dev   4. User's `rewardDebt` gets updated.
+/// @dev 
+/// @dev Notes:
+/// @dev - latestReward and rewardPerToken are a factor of 1e36 over the true value. When these values are
+/// @dev   used to caluculate rewardDebt and pendingAmount, we divide by 1e36. This is a poor-man's implementation
+/// @dev   of fixed point calculations to avoid rounding issues (1e36 is about half the range of a uint's 2^256).
+/// @dev   Simple explanation: https://ethereum.stackexchange.com/a/79732
+/// @dev   May wish to consider robust approach like: https://github.com/abdk-consulting/abdk-libraries-solidity
+/// @dev - DUST: All rounding / truncation is designed such that IF there is rounding, it ROUNDS DOWN such that a small amount
+/// @dev   of dust will be left in the contract. This prevents the contract from running out of funds due to rounding, as well
+/// @dev   as preventing potential attacks. Any dust can be redeemed by withdrawDust() if desired after the pool is closed.
+/// @dev 
+/// @dev Warning: improper contract use can lock reward tokens for adminDelay seconds.
+/// @dev - If there is a period of time where there is no StakingBalance, some reward tokens will be
+/// @dev   locked within the contract until adminDelay seconds after the pool closes. Make sure to
+/// @dev   stake a small amount of the chosen staking token before the startBlock to avoid this issue.
+/// @dev - If the stakingTokenID is chosen incorrectly, all reward tokens will be locked within the
+/// @dev   contract until adminDelay seconds after the pool closes (if you can't stake the correct
+/// @dev   token because no such token exists, you cant earn rewards). Deploy carefully.
+/// @dev 
+/// @dev --------------------------------------------------------------------------------------------------------------------
 contract StakingPools is Owned {
+
+    // LIBRARIES
 
     using SafeMathBasic for uint;
 
-    // uint constant adminDelay = 60*60*24*30; // 1 month delay for mainnet? Seems reasonable to me.
-    uint constant adminDelay = 60; // for testing
+    // CONSTANTS
 
+    /// @notice specifies required delay in seconds before withdrawDust() can be called by owner after pools close.
+    /// @dev should be set to multiple days to prevent abuse by owner
+    uint constant adminDelay = 60; // for testing
+    // uint constant adminDelay = 60*60*24*30; // 1 month delay for mainnet seems reasonable.
+
+    // STRUCTS
+
+    /// @notice Container for per-pool user information.
+    /// @member stakingBalance current user deposit of staking token.
+    /// @member rewardDebt value used for reward calculation
     struct UserInfo {
         uint stakingBalance;
         uint rewardDebt;
     }
 
+    /// @notice Container for per-pool settings and state.
+    /// @member userInfo contains user deposited tokens.
+    /// @member stakingTokenId token staked/deposited by users.
+    /// @member rewardTokenId token supplied by owner as reward for stakers.
+    /// @member totalStakingBalance (misnamed?) current net staking balance of all users.
+    /// @member totalRewardBalance (misnamed?) total amount of rewards added to pool (does NOT decrease w/ reward claims).
+    /// @member currentRewardBalance remaining rewards in pool that have not yet been dispensed (decreases w/ reward claims).
+    /// @member startBlock start block for the pool
+    /// @member endBlock end block for the pool
+    /// @member latestRewardBlock last block that the reward rate was updated
+    /// @member rewardPerPeriod amount of tokens distributed per period
+    /// @member rewardPerToken cumulative amount of tokens distributed per total number of tokens staked (times 1e36 for fixed point calculation)
+    /// @member paidOut
+    /// @dev paidOut is redundant with currentRewardBalance, consider removing
     struct PoolInfo {
         mapping(address => UserInfo) userInfo;
         tokenId stakingTokenId;
@@ -69,66 +100,66 @@ contract StakingPools is Owned {
         uint paidOut;
     }
 
+    // EVENTS
+
     event PoolCreated(uint pid);
     event Deposit(address addr, uint pid, uint amount);
     event Withdraw(address addr, uint pid, uint amount);
 
-    // globals
+    // GLOBALS
+    
     uint poolCount;
     mapping(uint => PoolInfo) public pools;
+
+    // FUNCTIONS
 
     constructor() Owned() public {
     }
     
+    /// @notice Updates rewardPerToken based on the current block height.
     function _updatePool(uint PoolId) private {
         PoolInfo storage pool = pools[PoolId];        
 
         uint latestBlock = block.number < pool.endBlock ? block.number : pool.endBlock;
 
-        // rewardPerToken is global, so we only want to update once per timestamp/block.
-        // latestRewardBlock initially set to startBlock, so no updates before that.
+        /// @dev rewardPerToken is shared by all pool users so we only want to update once per timestamp/block.
+        /// @dev latestRewardBlock initially set to startBlock, so this prevents updates before the pool opens.
         if( latestBlock <= pool.latestRewardBlock ) {
             return;
         }
 
-        // if staking balance is 0 over a period, the rewardPerToken should not increase.
+        /// @dev If staking balance is 0 over a period, the rewardPerToken should not increase.
         if ( pool.totalStakingBalance == 0 ) {
             pool.latestRewardBlock = latestBlock;
             return;
         }
 
-        // increase rewardPerToken by reward amount over period since previous reward block.
+        /// @dev Increase rewardPerToken by reward amount over period since previous reward block.
         uint period = latestBlock.sub(pool.latestRewardBlock);
+        /// @dev latestReward has the potential to round down here potentially allowing for some dust.
         uint latestReward = pool.rewardPerPeriod.mul(period).mul(1e36).div(pool.totalStakingBalance);
         pool.rewardPerToken = pool.rewardPerToken.add(latestReward);
         
+        /// @dev The contract this was based on ("Farm.sol") used block.number instead of latestBlock.
+        /// @dev However, due to the preceding requires these will have the same behavior equivalent.
         pool.latestRewardBlock = latestBlock;
-        // FIXME: Possible issue, check following:
-        //     Other pool code used block.number not latestBlock. Not sure why, need to
-        //     investigate to make sure this isn't an issue. latestBlock seems correct.
-        //     Other code:
-        //     pool.latestRewardBlock = block.number;
-        //     Seems wrong since, can move latest block beyond end block?
-        //     We want period latestBlock - latestRewardBlock = 0
-        //
-        //     OK: I've figured this out: if latestRewardBlock is set to block.number
-        //     and this is greater than endBlock, then the next update called will return because
-        //     latestBlock is capped at pool.endBlock. So it doesn't matter one way or another.
-
     }
 
+    /// @notice Deposit staking tokens into pool and collect any pending rewards.
     onMessage deposit(uint PoolId) payable {
         PoolInfo storage pool = pools[PoolId];
         UserInfo storage user = pool.userInfo[msg.sender];
         _updatePool(PoolId);
         require(msg.tokenid == pool.stakingTokenId); // token sent does not match staking pool
-        require(block.number <= pool.endBlock); // prevent deposit if pool closed
+        require(block.number <= pool.endBlock);      // prevent deposit if pool closed
 
         // dispense rewards
         if (user.stakingBalance > 0) {
             uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
+            /// @dev Prevents 0-amount transfers that can occur before pool opens (startBlock).
             if( pendingAmount > 0 ){
-                require( pendingAmount <= pool.currentRewardBalance ); // redundant with safemath .sub below
+                /// @dev redundant with safemath pool.currentRewardBalance.sub(pendingAmount) below.
+                require( pendingAmount <= pool.currentRewardBalance );
                 msg.sender.transfer(pool.rewardTokenId, pendingAmount);
                 pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
                 pool.paidOut = pool.paidOut.add(pendingAmount);
@@ -138,11 +169,13 @@ contract StakingPools is Owned {
         // update balances & recompute rewardDebt
         user.stakingBalance = user.stakingBalance.add(msg.amount);
         pool.totalStakingBalance = pool.totalStakingBalance.add(msg.amount);
+        /// @dev ATTENTION: rewardDebt has possibility to round down here, most dangerous line of code?
         user.rewardDebt = user.stakingBalance.mul(pool.rewardPerToken).div(1e36);
 
         emit Deposit(msg.sender, PoolId, msg.amount);
     }
 
+    /// @notice Withdraw staking tokens from pool and collect any pending rewards.
     onMessage withdraw(uint PoolId, uint amount) {
         PoolInfo storage pool = pools[PoolId];
         UserInfo storage user = pool.userInfo[msg.sender];
@@ -150,10 +183,13 @@ contract StakingPools is Owned {
         require(user.stakingBalance > 0); // must have funds staked to withdraw
         require(user.stakingBalance >= amount); // can't withdraw more than deposit
         
-        // dispense rewards, no if statement needed due to requires.
+        // dispense rewards
+        /// @dev no 'if' statement needed here due to require(user.stakingBalance > 0);
         uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
+        /// @dev Prevents 0-amount transfers that can occur before pool opens (startBlock).
         if( pendingAmount > 0 ){
-            require( pendingAmount <= pool.currentRewardBalance ); // redundant with safemath .sub below
+            /// @dev redundant with safemath pool.currentRewardBalance.sub(pendingAmount) below.
+            require( pendingAmount <= pool.currentRewardBalance ); 
             msg.sender.transfer(pool.rewardTokenId, pendingAmount);
             pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
             pool.paidOut = pool.paidOut.add(pendingAmount);
@@ -162,6 +198,7 @@ contract StakingPools is Owned {
         // update balances & recompute rewardDebt
         user.stakingBalance = user.stakingBalance.sub(amount);
         pool.totalStakingBalance = pool.totalStakingBalance.sub(amount);
+        /// @dev ATTENTION: rewardDebt has possibility to round down here, most dangerous line of code?
         user.rewardDebt = user.stakingBalance.mul(pool.rewardPerToken).div(1e36);
         
         // send withdrawn funds
@@ -170,7 +207,7 @@ contract StakingPools is Owned {
         emit Withdraw(msg.sender, PoolId, amount);        
     }
 
-    /// @notice rewardPerPeriod has the potential to round down only, allowing for some dust.
+    
     onMessage createStakingPool(
         uint startBlock,
         uint endBlock,
@@ -178,7 +215,7 @@ contract StakingPools is Owned {
     )
         payable
     {
-        require(msg.sender == owner);
+        require(msg.sender == owner); // must be owner
         require(startBlock < endBlock); // start time must be before end time
         require(block.number < startBlock); // start time cannot be in the past
         require(msg.amount < 1e35); // prevent potential issues with large supply tokens
@@ -192,34 +229,38 @@ contract StakingPools is Owned {
         pool.startBlock = startBlock;
         pool.endBlock = endBlock;
         pool.latestRewardBlock = startBlock;
+        /// @dev rewardPerPeriod has the potential to round down here potentially allowing for some dust.
         pool.rewardPerPeriod = msg.amount.div(endBlock.sub(startBlock));
         pool.rewardPerToken = 0;
         pool.paidOut = 0;
     }
 
-    // Add additional funds to the pool, increase the end block
+    /// @notice Add additional funds to the pool, increases endBlock keeping rewardPerPeriod constant.
     onMessage fundStakingPool(uint PoolId) payable {
-        require(msg.sender == owner);
+        require(msg.sender == owner); // must be owner
+        require(PoolId < poolCount); // pool must be deployed already
         PoolInfo storage pool = pools[PoolId];
         require(block.number < pool.endBlock); // can't fund an ended pool
-        require(msg.tokenid == pool.rewardTokenId);
-        require(msg.amount > 0);
-        require(PoolId < poolCount);
+        require(msg.tokenid == pool.rewardTokenId); // wrong tokenId deposited
+        require(msg.amount > 0); // must send tokens to deposit        
+        /// @dev endBlockIncrease has the potential to round down here allowing for some dust.
         uint endBlockIncrease = msg.amount.div(pool.rewardPerPeriod);
-        require(endBlockIncrease > 0);
+        require(endBlockIncrease > 0); // not enough tokens added to increase pool duration
         pool.totalRewardBalance = pool.totalRewardBalance.add(msg.amount);
-        require(pool.totalRewardBalance < 1e35); // prevent potential issues with large supply tokens
+        /// @dev Prevent potential issues with large supply tokens.
+        require(pool.totalRewardBalance < 1e35); // too many tokens added
         pool.currentRewardBalance = pool.currentRewardBalance.add(msg.amount);
         pool.endBlock += endBlockIncrease;
     }
 
-    // allow extraction of dust and any unclaimed funds by contract owner after pool closes and a delay
+    /// @notice Withdraw any dust and any unclaimed rewards. Usable by contract owner after adminDelay seconds once pool closes.
     onMessage withdrawDust(uint PoolId){
         PoolInfo storage pool = pools[PoolId];
-        require(msg.sender == owner);
-        require(block.number > pool.endBlock + adminDelay);
-        require(pool.currentRewardBalance > 0);
-        require(pool.paidOut < pool.totalRewardBalance);
+        require(msg.sender == owner); // must be owner
+        require(block.number > pool.endBlock + adminDelay); // must wait until pool is closed and adminDelay seconds passed
+        require(pool.currentRewardBalance > 0); // can't withdraw if no tokens left
+        /// @dev redundant with require(pool.currentRewardBalance > 0);
+        require(pool.paidOut < pool.totalRewardBalance); // must not have paid out all rewards
         msg.sender.transfer(pool.rewardTokenId, pool.currentRewardBalance);
         pool.paidOut = pool.paidOut.add(pool.currentRewardBalance);
         pool.currentRewardBalance = 0;
