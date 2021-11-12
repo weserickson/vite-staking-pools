@@ -34,18 +34,19 @@ import "./Owned.solpp";
 //   Simple explanation: https://ethereum.stackexchange.com/a/79732
 //   May wish to consider robust approach like: https://github.com/abdk-consulting/abdk-libraries-solidity
 //
-// Warnings:
+// Warning: Treward tokens
 // - If there is a period of time where there is no StakingBalance, some reward tokens will be
-//   permanently locked within the contract. Make sure to stake a small amount of the chosen
-//   staking token before the startBlock to avoid such losses.
+//   locked within the contract until adminDelay seconds after the pool closes. Make sure to
+//   stake a small amount of the chosen staking token before the startBlock to avoid this issue.
 // - If the stakingTokenID is chosen incorrectly, all reward tokens will be locked within the
-//   contract (if you can't stake the correct token, you cant earn rewards). Deploy carefully.
+//   contract until adminDelay seconds after the pool closes (if you can't stake the correct
+//   token because no such token exists, you cant earn rewards). Deploy carefully.
 // 
 contract StakingPools is Owned {
 
     using SafeMathBasic for uint;
 
-    // uint constant adminDelay = 60*60*24*7; // for mainnet
+    // uint constant adminDelay = 60*60*24*30; // 1 month delay for mainnet? Seems reasonable to me.
     uint constant adminDelay = 60; // for testing
 
     struct UserInfo {
@@ -146,7 +147,7 @@ contract StakingPools is Owned {
         require(user.stakingBalance > 0); // must have funds staked to withdraw
         require(user.stakingBalance >= amount); // can't withdraw more than deposit
         
-        // dispense rewards, no if statement due to require.
+        // dispense rewards, no if statement needed due to requires.
         uint pendingAmount = user.stakingBalance.mul(pool.rewardPerToken).div(1e36).sub(user.rewardDebt);
         msg.sender.transfer(pool.rewardTokenId, pendingAmount);
         pool.currentRewardBalance = pool.currentRewardBalance.sub(pendingAmount);
@@ -204,7 +205,7 @@ contract StakingPools is Owned {
         pool.endBlock += endBlockIncrease;
     }
 
-    // allow extraction of dust and any unclaimed funds by contract owner
+    // allow extraction of dust and any unclaimed funds by contract owner after pool closes and a delay
     onMessage withdrawDust(uint PoolId){
         PoolInfo storage pool = pools[PoolId];
         require(msg.sender == owner);
