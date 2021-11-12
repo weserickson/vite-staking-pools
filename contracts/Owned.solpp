@@ -1,0 +1,25 @@
+pragma soliditypp ^0.4.3;
+
+/// @title Owned 
+/// @author Wesley W. Erickson
+/// @notice Adds basic owner functionality to a contract.
+contract Owned {
+    address public owner;
+
+    /// @notice Constructor sets owner to deployment address.
+    constructor() public {
+        owner = msg.sender;
+    }
+    
+    /// @notice Change owner of contract; only usable by current owner.
+    onMessage setOwner(address newOwner){
+        require(msg.sender == owner);
+        owner = newOwner;
+    }
+    
+    /// @notice Getter for address of current owner of contract.
+    getter getOwner() returns(address owner){
+        return Owned.owner;
+    }
+
+}

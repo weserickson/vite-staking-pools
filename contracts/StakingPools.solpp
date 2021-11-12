@@ -1,5 +1,6 @@
 pragma soliditypp ^0.4.3;
 import "./SafeMathBasic.solpp";
+import "./Owned.solpp";
 //
 // StakingPools.solpp
 //
@@ -41,7 +42,7 @@ import "./SafeMathBasic.solpp";
 // - If the stakingTokenID is chosen incorrectly, all reward tokens will be locked within the
 //   contract (if you can't stake the correct token, you cant earn rewards). Deploy carefully.
 // 
-contract StakingPools {
+contract StakingPools is Owned {
 
     using SafeMathBasic for uint;
 
@@ -72,7 +73,7 @@ contract StakingPools {
     uint poolCount;
     mapping(uint => PoolInfo) public pools;
 
-    constructor() public {
+    constructor() Owned() public {
     }
 
     
@@ -161,6 +162,7 @@ contract StakingPools {
     )
         payable
     {
+        require(msg.sender == owner);
         require(startBlock < endBlock); // start time must be before end time
         require(block.number < startBlock); // start time cannot be in the past
         emit PoolCreated(poolCount); // emit PoolId of new pool.
@@ -169,6 +171,7 @@ contract StakingPools {
         pool.rewardTokenId = msg.tokenid; // reward tokenId determined by funds sent
         pool.totalStakingBalance = 0;
         pool.totalRewardBalance = msg.amount;
+        pool.currentRewardBalance = msg.amount;
         pool.startBlock = startBlock;
         pool.endBlock = endBlock;
         pool.latestRewardBlock = startBlock;
