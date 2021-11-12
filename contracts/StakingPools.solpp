@@ -189,15 +189,30 @@ contract StakingPools is Owned {
         pool.paidOut = 0;
     }
 
-// A bit dangerous if malicious owner could intentiounally create dust? No, they can't.
+    // Add additional funds to the pool, increase the end block
+    onMessage fundStakingPool(uint PoolId) payable {
+        //require(msg.sender == owner); // maybe, maybe not.
+        PoolInfo storage pool = pools[PoolId];
+        require(block.number < pool.endBlock); // can't fund an ended pool
+        require(msg.tokenid == pool.rewardTokenId);
+        require(msg.amount > 0);
+        require(PoolId < poolCount);
+        uint endBlockIncrease = msg.amount.div(pool.rewardPerPeriod);
+        require(endBlockIncrease > 0);
+        pool.totalRewardBalance = pool.totalRewardBalance.add(msg.amount);
+        pool.currentRewardBalance = pool.currentRewardBalance.add(msg.amount);
+        pool.endBlock += endBlockIncrease;
+    }
+
+    // allow extraction of dust and any unclaimed funds by contract owner
     onMessage withdrawDust(uint PoolId){
         PoolInfo storage pool = pools[PoolId];
         require(msg.sender == owner);
         require(block.number > pool.endBlock + adminDelay);
         require(pool.currentRewardBalance > 0);
-        require(PoolId < poolCount);
         require(pool.paidOut < pool.totalRewardBalance);
         msg.sender.transfer(pool.rewardTokenId, pool.currentRewardBalance);
+        pool.paidOut = pool.paidOut.add(pool.currentRewardBalance);
         pool.currentRewardBalance = 0;
     }
 
@@ -205,7 +220,7 @@ contract StakingPools is Owned {
         return poolCount;
     }
 
-    getter getUserInfo (uint PoolId, address addr)
+    getter getUserInfo(uint PoolId, address addr)
         returns (
             uint stakingBalance,
             uint rewardDebt
